@@ -1,0 +1,200 @@
+-- ServerScriptService/PondDreamController
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local TweenService = game:GetService("TweenService")
+
+local DreamSelectionService =
+	require(ServerScriptService:WaitForChild("DreamSelectionService"))
+
+local performInteract = ReplicatedStorage
+	:WaitForChild("DreamEvents")
+	:WaitForChild("PerformInteraction")
+
+local mainMap = workspace:WaitForChild("MainMap")
+
+-- Change these colors and dream names.
+local COLORS = {
+	{
+		Name = "Red",
+		Color = Color3.fromRGB(176, 45, 72),
+	},
+	{
+		Name = "Blue",
+		Color = Color3.fromRGB(57, 96, 170),
+	},
+	{
+		Name = "Green",
+		Color = Color3.fromRGB(57, 145, 104),
+	},
+}
+
+-- Order is always Pond 1 | Pond 2 | Pond 3.
+-- Every dream name must exactly match a model in ServerStorage.Maps.
+local RECIPES = {
+	["Red|Blue|Green"] = "Bibliotheca Infinita",
+	["Blue|Blue|Blue"] = "Nivalis",
+	["Green|Red|Blue"] = "Taberna",
+	["Red|Red|Green"] = "Convivium Potationis Perpetuum",
+}
+
+local POND_NAMES = {
+	"Pond 1",
+	"Pond 2",
+	"Pond 3",
+}
+
+local CLICK_COOLDOWN = 0.35
+local TWEEN_TIME = 0.25
+
+local pondStates = {}
+local playerCooldowns = {}
+
+local function showMessageToEveryone(message)
+	performInteract:FireAllClients("Message", message)
+end
+
+local function updatePondDecal(waterPart, color)
+	-- Pond Water is the Decal, not the clickable part.
+	local pondWaterDecal = waterPart:FindFirstChild("Pond Water")
+
+	if not pondWaterDecal then
+		warn(
+			"PondDreamController: Missing Pond Water under",
+			waterPart:GetFullName()
+		)
+		return
+	end
+
+	if not pondWaterDecal:IsA("Decal")
+		and not pondWaterDecal:IsA("Texture") then
+		warn(
+			"PondDreamController: Pond Water must be a Decal or Texture:",
+			pondWaterDecal:GetFullName()
+		)
+		return
+	end
+
+	TweenService:Create(
+		pondWaterDecal,
+		TweenInfo.new(TWEEN_TIME, Enum.EasingStyle.Quad),
+		{Color3 = color}
+	):Play()
+end
+
+local function playPondSound(waterPart)
+	local sound = waterPart:FindFirstChild("SelectSound")
+
+	if sound and sound:IsA("Sound") then
+		sound.TimePosition = 0
+		sound:Play()
+	else
+		warn(
+			"PondDreamController: Missing SelectSound under",
+			waterPart:GetFullName()
+		)
+	end
+end
+
+local function calculateRecipe()
+	local colorNames = {}
+
+	for index = 1, #POND_NAMES do
+		local state = pondStates[index]
+
+		if not state or state.ColorIndex == 0 then
+			DreamSelectionService.SetPondDream(nil)
+			return
+		end
+
+		table.insert(colorNames, COLORS[state.ColorIndex].Name)
+	end
+
+	local recipeKey = table.concat(colorNames, "|")
+	local dreamName = RECIPES[recipeKey]
+
+	if dreamName then
+		if DreamSelectionService.SetPondDream(dreamName) then
+			showMessageToEveryone("Something stirs beneath the water.")
+			print(
+				"PondDreamController: Valid recipe",
+				recipeKey,
+				"selected",
+				dreamName
+			)
+		end
+	else
+		-- Invalid complete combinations do not force anything.
+		DreamSelectionService.SetPondDream(nil)
+	end
+end
+
+local function cyclePond(index, player)
+	local state = pondStates[index]
+
+	if not state then
+		return
+	end
+
+	local now = os.clock()
+	local lastClick = playerCooldowns[player] or 0
+
+	if now - lastClick < CLICK_COOLDOWN then
+		return
+	end
+
+	playerCooldowns[player] = now
+
+	state.ColorIndex += 1
+
+	if state.ColorIndex > #COLORS then
+		state.ColorIndex = 1
+	end
+
+	local colorData = COLORS[state.ColorIndex]
+
+	updatePondDecal(state.WaterPart, colorData.Color)
+	playPondSound(state.WaterPart)
+	calculateRecipe()
+end
+
+for index, pondName in ipairs(POND_NAMES) do
+	local pond = mainMap:WaitForChild(pondName)
+
+	-- TextureUnion is the actual physical water.
+	local waterPart = pond:WaitForChild("TextureUnion")
+
+	if not waterPart:IsA("BasePart") then
+		warn(
+			"PondDreamController:",
+			waterPart:GetFullName(),
+			"must be a BasePart"
+		)
+		continue
+	end
+
+	-- ClickDetector belongs under TextureUnion.
+	local clickDetector =
+		waterPart:FindFirstChildWhichIsA("ClickDetector")
+
+	if not clickDetector then
+		clickDetector = Instance.new("ClickDetector")
+		clickDetector.Name = "ClickDetector"
+		clickDetector.MaxActivationDistance = 16
+		clickDetector.Parent = waterPart
+	end
+
+	pondStates[index] = {
+		WaterPart = waterPart,
+		ColorIndex = 0,
+	}
+
+	clickDetector.MouseClick:Connect(function(player)
+		cyclePond(index, player)
+	end)
+end
+
+Players.PlayerRemoving:Connect(function(player)
+	playerCooldowns[player] = nil
+end)
