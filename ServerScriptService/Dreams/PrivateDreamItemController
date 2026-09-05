@@ -1,0 +1,244 @@
+-- ServerScriptService/PrivateDreamItemController
+
+local BadgeService = game:GetService("BadgeService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local DreamSelectionService =
+	require(ServerScriptService:WaitForChild("DreamSelectionService"))
+
+local performInteract = ReplicatedStorage
+	:WaitForChild("DreamEvents")
+	:WaitForChild("PerformInteraction")
+
+local currentDreamStatus =
+	ReplicatedStorage:WaitForChild("CurrentDreamStatus")
+
+local itemTemplates =
+	ServerStorage:WaitForChild("PrivateDreamItemSpawns")
+
+-- True only for a player-owned VIP/private server.
+-- Reserved servers will not qualify.
+local IS_PLAYER_OWNED_PRIVATE_SERVER =
+	game.PrivateServerId ~= ""
+	and game.PrivateServerOwnerId ~= 0
+
+if not IS_PLAYER_OWNED_PRIVATE_SERVER then
+	-- Templates remain hidden in ServerStorage.
+	return
+end
+
+local privateServerOwnerId = game.PrivateServerOwnerId
+local mainMap = workspace:WaitForChild("MainMap")
+
+local spawnedItems = Instance.new("Folder")
+spawnedItems.Name = "PrivateDreamItems"
+spawnedItems.Parent = mainMap
+
+local itemConnections = {}
+local itemUsed = {}
+local ownerBadgeCache = {}
+
+local function readConfiguration(item, name)
+	-- Supports your NumberValue/StringValue setup.
+	local valueObject = item:FindFirstChild(name)
+
+	if valueObject and valueObject:IsA("ValueBase") then
+		return valueObject.Value
+	end
+
+	-- Attributes are also supported.
+	return item:GetAttribute(name)
+end
+
+local function ownerHasBadge(badgeId)
+	if ownerBadgeCache[badgeId] ~= nil then
+		return ownerBadgeCache[badgeId]
+	end
+
+	local success, hasBadge = pcall(
+		BadgeService.UserHasBadgeAsync,
+		BadgeService,
+		privateServerOwnerId,
+		badgeId
+	)
+
+	if not success then
+		warn(
+			"PrivateDreamItemController: Badge lookup failed:",
+			tostring(hasBadge)
+		)
+		return false
+	end
+
+	ownerBadgeCache[badgeId] = hasBadge
+	return hasBadge
+end
+
+local function getClickablePart(item)
+	if item:IsA("BasePart") then
+		return item
+	end
+
+	if item:IsA("Model") then
+		if item.PrimaryPart then
+			return item.PrimaryPart
+		end
+
+		return item:FindFirstChildWhichIsA("BasePart", true)
+	end
+
+	return nil
+end
+
+local function playSelectionSound(item)
+	local existingSound = item:FindFirstChild("SelectSound", true)
+
+	if existingSound and existingSound:IsA("Sound") then
+		existingSound.TimePosition = 0
+		existingSound:Play()
+		return
+	end
+
+	local soundId = readConfiguration(item, "SelectionSoundId")
+
+	if typeof(soundId) ~= "string" or soundId == "" then
+		return
+	end
+
+	if not string.find(soundId, "rbxassetid://", 1, true) then
+		soundId = "rbxassetid://" .. soundId
+	end
+
+	local soundParent = getClickablePart(item)
+
+	if not soundParent then
+		return
+	end
+
+	local sound = Instance.new("Sound")
+	sound.Name = "TemporarySelectionSound"
+	sound.SoundId = soundId
+	sound.Volume = 1
+	sound.Parent = soundParent
+	sound:Play()
+
+	sound.Ended:Once(function()
+		sound:Destroy()
+	end)
+end
+
+local function setItemEnabled(item, enabled)
+	local clickDetector =
+		item:FindFirstChildWhichIsA("ClickDetector", true)
+
+	if clickDetector then
+		clickDetector.MaxActivationDistance = enabled and 16 or 0
+	end
+end
+
+local function connectItem(item)
+	local dreamName = readConfiguration(item, "DreamName")
+	local clickablePart = getClickablePart(item)
+
+	if typeof(dreamName) ~= "string" or dreamName == "" then
+		warn(
+			"PrivateDreamItemController:",
+			item.Name,
+			"has no valid DreamName"
+		)
+		return
+	end
+
+	if not clickablePart then
+		warn(
+			"PrivateDreamItemController:",
+			item.Name,
+			"does not contain a BasePart"
+		)
+		return
+	end
+
+	local clickDetector =
+		clickablePart:FindFirstChildWhichIsA("ClickDetector")
+
+	if not clickDetector then
+		clickDetector = Instance.new("ClickDetector")
+		clickDetector.Name = "ClickDetector"
+		clickDetector.MaxActivationDistance = 16
+		clickDetector.Parent = clickablePart
+	end
+
+	itemUsed[item] = false
+
+	itemConnections[item] =
+		clickDetector.MouseClick:Connect(function(player)
+			if itemUsed[item] then
+				return
+			end
+
+			-- The owner controls which shortcut appears, but any player
+			-- in that owner's private server may activate the shortcut.
+			if not DreamSelectionService.SetPrivateItemDream(dreamName) then
+				return
+			end
+
+			itemUsed[item] = true
+			setItemEnabled(item, false)
+
+			playSelectionSound(item)
+
+			-- Uses your existing DreamGui interaction presentation.
+			performInteract:FireAllClients(
+				"Message",
+				"Going Deeper."
+			)
+
+			print(
+				"PrivateDreamItemController:",
+				player.Name,
+				"selected",
+				dreamName
+			)
+		end)
+end
+
+local function spawnEligibleItems()
+	for _, template in ipairs(itemTemplates:GetChildren()) do
+		local badgeId = readConfiguration(template, "BadgeId")
+
+		if typeof(badgeId) ~= "number" or badgeId <= 0 then
+			warn(
+				"PrivateDreamItemController:",
+				template.Name,
+				"needs a valid BadgeId"
+			)
+			continue
+		end
+
+		-- Only clone it if the private-server owner owns its badge.
+		if ownerHasBadge(badgeId) then
+			local item = template:Clone()
+			item.Parent = spawnedItems
+			connectItem(item)
+		end
+	end
+end
+
+local function resetItemsAfterWake()
+	for _, item in ipairs(spawnedItems:GetChildren()) do
+		itemUsed[item] = false
+		setItemEnabled(item, true)
+	end
+end
+
+spawnEligibleItems()
+
+-- Reset one-use clicks when the server returns to MainMap.
+currentDreamStatus:GetPropertyChangedSignal("Value"):Connect(function()
+	if currentDreamStatus.Value == "" then
+		resetItemsAfterWake()
+	end
+end)
