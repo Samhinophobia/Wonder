@@ -1,0 +1,73 @@
+-- ServerScriptService/DreamSelectionService
+
+local ServerStorage = game:GetService("ServerStorage")
+
+local DreamSelectionService = {}
+
+local mapsFolder = ServerStorage:WaitForChild("Maps")
+
+local privateItemDream = nil
+local pondDream = nil
+
+local function isValidDream(dreamName)
+	return typeof(dreamName) == "string"
+		and dreamName ~= ""
+		and mapsFolder:FindFirstChild(dreamName) ~= nil
+end
+
+function DreamSelectionService.SetPrivateItemDream(dreamName)
+	if not isValidDream(dreamName) then
+		warn(
+			"DreamSelectionService: Private item references missing map:",
+			tostring(dreamName)
+		)
+		return false
+	end
+
+	privateItemDream = dreamName
+	return true
+end
+
+function DreamSelectionService.SetPondDream(dreamName)
+	if dreamName == nil then
+		pondDream = nil
+		return true
+	end
+
+	if not isValidDream(dreamName) then
+		warn(
+			"DreamSelectionService: Pond recipe references missing map:",
+			tostring(dreamName)
+		)
+		pondDream = nil
+		return false
+	end
+
+	pondDream = dreamName
+	return true
+end
+
+function DreamSelectionService.GetPrivateItemDream()
+	return privateItemDream
+end
+
+function DreamSelectionService.GetPondDream()
+	return pondDream
+end
+
+function DreamSelectionService.ConsumeNextDream()
+	-- Private-server shortcuts take priority over pond combinations.
+	local selectedDream = privateItemDream or pondDream
+
+	-- Both choices apply only to the next dream.
+	privateItemDream = nil
+	pondDream = nil
+
+	if isValidDream(selectedDream) then
+		return selectedDream
+	end
+
+	return nil
+end
+
+return DreamSelectionService
